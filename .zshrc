@@ -195,8 +195,8 @@ alias gc='git commit'
 alias gp='git push'
 alias gl='git log --oneline'
 
-# dotfile backup
-alias config='/usr/bin/git --git-dir=$HOME/.cfg/ --work-tree=$HOME'
+# dotfile backup (uses ~/.config/dotignore)
+alias config='/usr/bin/git --git-dir=$HOME/.cfg/ --work-tree=$HOME -c core.excludesFile=$HOME/.config/dotignore'
 
 
 # Utility

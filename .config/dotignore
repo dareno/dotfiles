@@ -1,0 +1,11 @@
+# Ignore everything by default
+*
+
+# Whitelist dotfiles you want to track
+!.zshrc
+!.gitconfig-personal
+!.vimrc
+!.config/
+!.config/nvim/init.vim
+!.config/dotignore
+# Add more files or directories you want explicitly tracked
