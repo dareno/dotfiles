@@ -2,10 +2,13 @@
 *
 
 # Whitelist dotfiles you want to track
+!.zshenv
 !.zshrc
 !.gitconfig-personal
 !.vimrc
 !.config/
 !.config/nvim/init.vim
 !.config/dotignore
+!.config/zsh/
+!.config/zsh/.zshrc
 # Add more files or directories you want explicitly tracked
