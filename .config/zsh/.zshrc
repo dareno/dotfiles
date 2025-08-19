@@ -10,7 +10,7 @@
 # History settings
 HISTSIZE=10000
 SAVEHIST=10000
-HISTFILE=~/.zsh_history
+export HISTFILE=$ZDOTDIR/.zsh_history
 
 # History options
 setopt HIST_IGNORE_DUPS      # Don't record duplicate entries
@@ -65,7 +65,7 @@ path_prepend() {
 [[ -d "$HOME/.local/bin" ]] && path_prepend "$HOME/.local/bin"
 
 # Common exports
-export EDITOR="code"  # Change to your preferred editor
+export EDITOR="windsurf"  # Change to your preferred editor
 export CLICOLOR=1
 
 # ----------------------------------------------------------------------------
