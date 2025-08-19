@@ -33,9 +33,14 @@ setopt ALWAYS_TO_END         # Move cursor to end after completion
 # Shell Completion
 # ----------------------------------------------------------------------------
 
-# Initialize completion system
+# Initialize completion system (fast, cached)
 autoload -Uz compinit
-compinit
+ZCD="${ZDOTDIR:-$HOME}/.zcompdump"
+if [[ ! -f $ZCD ]]; then
+  compinit -d "$ZCD"
+else
+  compinit -C -d "$ZCD"
+fi
 
 # Completion styling
 zstyle ':completion:*' menu select
@@ -46,24 +51,70 @@ zstyle ':completion:*' list-colors ''  # Use LS_COLORS for file completion
 # Environment Variables & Paths
 # ----------------------------------------------------------------------------
 
-# Add local bin to PATH if it exists
-[[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+# Keep path/fpath unique to avoid duplicates
+typeset -U path fpath
 
-# Rancher Desktop Integration (for older versions or manual setup)
-# This block ensures Docker, Kubernetes (kubectl), etc., are available.
-# It checks if the .rd/bin directory exists before trying to configure.
-if [[ -d "$HOME/.rd/bin" ]]; then
-    # Add Rancher Desktop binaries to PATH
-    export PATH="$HOME/.rd/bin:$PATH"
-    # Set DOCKER_HOST to point to Rancher Desktop's Docker socket
-    export DOCKER_HOST="unix://$HOME/.rd/docker.sock"
-    # Optionally, you might also need KUBECONFIG if you use kubectl
-    # export KUBECONFIG="$HOME/.kube/config:$HOME/.rd/kube/config"
-fi
+# Helper to prepend to PATH if directory exists and isn't already present
+path_prepend() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 0
+  case ":$PATH:" in (*":$dir:"*) ;; (*) PATH="$dir:$PATH" ;; esac
+}
+
+# Add local bin to PATH if it exists
+[[ -d "$HOME/.local/bin" ]] && path_prepend "$HOME/.local/bin"
 
 # Common exports
 export EDITOR="code"  # Change to your preferred editor
 export CLICOLOR=1
+
+# ----------------------------------------------------------------------------
+# OS detection and per-OS config
+# ----------------------------------------------------------------------------
+case "$OSTYPE" in
+  darwin*)   OS_FAMILY="macos" ;;
+  linux-gnu*) OS_FAMILY="linux" ;;
+  *)         OS_FAMILY="other" ;;
+esac
+export OS_FAMILY
+
+if [[ $OS_FAMILY == macos ]]; then
+  # Homebrew (mac only; ignore on Linux)
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+
+  # macOS defaults
+  alias ls='ls -G'
+  export BROWSER=open
+  alias open='open'
+
+  # Rancher Desktop Docker socket
+  [[ -S "$HOME/.rd/docker.sock" ]] && export DOCKER_HOST="unix://$HOME/.rd/docker.sock"
+
+elif [[ $OS_FAMILY == linux ]]; then
+  # Linux defaults
+  alias ls='ls --color=auto'
+  export BROWSER=xdg-open
+  alias open='xdg-open'
+
+  # Clipboard shims for pbcopy/pbpaste
+  if ! command -v pbcopy >/dev/null 2>&1; then
+    if command -v xclip >/dev/null 2>&1; then
+      alias pbcopy='xclip -selection clipboard'
+      alias pbpaste='xclip -selection clipboard -o'
+    elif command -v wl-copy >/dev/null 2>&1; then
+      alias pbcopy='wl-copy'
+      alias pbpaste='wl-paste'
+    fi
+  fi
+fi
+
+# Optional: common toolchains
+[[ -d "$HOME/.cargo/bin" ]] && path_prepend "$HOME/.cargo/bin"
+[[ -d "$HOME/go/bin" ]] && path_prepend "$HOME/go/bin"
 
 # ----------------------------------------------------------------------------
 # Fuzzy Finder (fzf)
@@ -73,7 +124,13 @@ export CLICOLOR=1
 
 # fzf configuration
 export FZF_DEFAULT_OPTS="--height 40% --layout=reverse --border"
-export FZF_DEFAULT_COMMAND="find . -type f -not -path '*/\.git/*' -not -path '*/node_modules/*' -not -path '*/venv/*' -not -path '*/__pycache__/*' -not -path '*/build/*' -not -path '*/dist/*' -not -path '*/\.DS_Store' -not -path '*/\.Trash/*' 2>/dev/null"
+if command -v fd >/dev/null 2>&1; then
+  export FZF_DEFAULT_COMMAND="fd --type f --hidden --follow \
+    --exclude .git --exclude node_modules --exclude venv --exclude __pycache__ \
+    --exclude build --exclude dist"
+else
+  export FZF_DEFAULT_COMMAND="find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/venv/*' -not -path '*/__pycache__/*' -not -path '*/build/*' -not -path '*/dist/*' -not -path '*/.DS_Store' -not -path '*/.Trash/*' 2>/dev/null"
+fi
 export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
 
 # ----------------------------------------------------------------------------
@@ -82,7 +139,7 @@ export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
 
 # Initialize starship prompt
 # Conditionally initialize Starship prompt
-if [[ "$TERM_PROGRAM" != "vscode" ]]; then
+if [[ "$TERM_PROGRAM" != "vscode" ]] && command -v starship >/dev/null 2>&1; then
   # Initialize Starship for non-VS Code/Windsurf terminals
   eval "$(starship init zsh)"
 fi
@@ -122,7 +179,6 @@ noprompt() {
 # ----------------------------------------------------------------------------
 
 # Better defaults
-alias ls='ls -G'  # macOS colored output
 alias ll='ls -alF'
 alias la='ls -A'
 alias l='ls -CF'
@@ -144,7 +200,9 @@ alias config='/usr/bin/git --git-dir=$HOME/.cfg/ --work-tree=$HOME'
 
 
 # Utility
-alias grep='grep --color=auto'
+if echo | grep --color=auto "" >/dev/null 2>&1; then
+  alias grep='grep --color=auto'
+fi
 alias mkdir='mkdir -p'  # Create parent directories as needed
 alias h='history'
 alias c='clear'
@@ -215,10 +273,23 @@ _recent_fd_exclude_args() {
 # Shared: List files sorted by mtime, with excludes
 _recent_file_list() {
   local fd_exclude_args=("$@")
-  fd --type f --hidden -0 "${fd_exclude_args[@]}" . \
-    | xargs -0 stat -f "%m %Sm %N" 2>/dev/null \
-    | sort -nr \
-    | sed 's/^[0-9]* //'
+  local stat_cmd
+  if stat --version >/dev/null 2>&1; then
+    stat_cmd=(stat -c '%Y|||%n')   # GNU (Linux): epoch|||path
+  else
+    stat_cmd=(stat -f '%m|||%Sm|||%N')  # BSD (macOS)
+  fi
+  if [[ $OS_FAMILY == linux ]]; then
+    fd --type f --hidden -0 "${fd_exclude_args[@]}" . \
+      | xargs -0 "${stat_cmd[@]}" 2>/dev/null \
+      | sort -nr \
+      | awk -F '\\|\\|\\|' '{ epoch=$1; path=$2; cmd=sprintf("date -d @%s +\"%b %e %T %Y\"", epoch); cmd | getline human; close(cmd); printf "%s %s\n", human, path }'
+  else
+    fd --type f --hidden -0 "${fd_exclude_args[@]}" . \
+      | xargs -0 "${stat_cmd[@]}" 2>/dev/null \
+      | sort -nr \
+      | awk -F '\\|\\|\\|' '{print $2 " " $3}'
+  fi
 }
 
 # Interactive selection of recent files with fzf and open in VS Code (Recent EDit)
@@ -294,8 +365,11 @@ recent() {
 [[ -f ~/.zshrc.local ]] && source ~/.zshrc.local
 
 # Added by Windsurf
-export PATH="/Users/dreno200/.codeium/windsurf/bin:$PATH"
+export PATH="$HOME/.codeium/windsurf/bin:$PATH"
 
 ### MANAGED BY RANCHER DESKTOP START (DO NOT EDIT)
-export PATH="/Users/dreno200/.rd/bin:$PATH"
+export PATH="$HOME/.rd/bin:$PATH"
 ### MANAGED BY RANCHER DESKTOP END (DO NOT EDIT)
+
+# Final PATH de-duplication (ensures no duplicate entries remain)
+path=($path)
