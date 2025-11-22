@@ -240,6 +240,7 @@ fe() {
 # Shared: Get default exclude patterns
 _recent_exclude_patterns() {
   echo \
+    .cfg \
     node_modules \
     venv \
     __pycache__ \
@@ -335,10 +336,6 @@ red() {
   fi
 }
 
-# Experimental: Highly readable version of 'red' for testing
-
-
-
 
 # Display n most recent files, with excludes and fd for performance
 recent() {
@@ -357,6 +354,16 @@ recent() {
 }
 
 
+# Stopwatch: prints HH:MM:SS, Ctrl+C to stop
+stopwatch() {
+  emulate -L zsh
+  trap 'print; return' INT TERM
+  SECONDS=0
+  while true; do
+    printf "\r%02d:%02d:%02d" $((SECONDS/3600)) $((SECONDS%3600/60)) $((SECONDS%60))
+    sleep 1
+  done
+}
 # ----------------------------------------------------------------------------
 # Local Customizations
 # ----------------------------------------------------------------------------
