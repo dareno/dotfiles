@@ -7,18 +7,22 @@
 # Core Shell Configuration
 # ----------------------------------------------------------------------------
 
-# History settings
+## History settings
+
 HISTSIZE=10000
 SAVEHIST=10000
 export HISTFILE=$ZDOTDIR/.zsh_history
 
-# History options
-setopt HIST_IGNORE_DUPS      # Don't record duplicate entries
-setopt HIST_IGNORE_SPACE     # Don't record entries starting with space
-setopt HIST_VERIFY           # Show command with history expansion before running
-setopt SHARE_HISTORY         # Share history across sessions
-setopt APPEND_HISTORY        # Append to history file
-setopt INC_APPEND_HISTORY    # Write to history file immediately
+## History behavior
+
+setopt APPEND_HISTORY       # Append to history file, don't overwrite
+setopt INC_APPEND_HISTORY   # Write commands immediately after execution
+unsetopt SHARE_HISTORY      # Avoid cross-window history races/confusion
+
+setopt HIST_IGNORE_DUPS     # Don't record consecutive duplicate entries
+setopt HIST_IGNORE_SPACE    # Don't record commands starting with space
+setopt HIST_VERIFY          # Show history expansion before running
+setopt HIST_REDUCE_BLANKS   # Remove superfluous whitespace from commands
 
 # Directory navigation
 setopt AUTO_CD               # Change directory without 'cd'
@@ -28,6 +32,12 @@ setopt PUSHD_IGNORE_DUPS     # Don't push duplicate directories
 # Completion behavior
 setopt COMPLETE_IN_WORD      # Allow completion in middle of word
 setopt ALWAYS_TO_END         # Move cursor to end after completion
+
+# Enable comments in interactive zsh (chat LLMs like to comment)
+setopt interactivecomments
+
+# OpenSpec shell completions configuration
+fpath=("/Users/dreno200/.zsh/completions" $fpath)
 
 # ----------------------------------------------------------------------------
 # Shell Completion
@@ -91,8 +101,12 @@ if [[ $OS_FAMILY == macos ]]; then
   export BROWSER=open
   alias open='open'
 
-  # Rancher Desktop Docker socket
+  # Rancher Desktop CLI and Docker socket
   [[ -S "$HOME/.rd/docker.sock" ]] && export DOCKER_HOST="unix://$HOME/.rd/docker.sock"
+  [[ -d "$HOME/.rd/bin" ]] && path_prepend "$HOME/.rd/bin"
+
+  # Override system Go (from /etc/paths.d/go) with Homebrew Go
+  [[ -d "/opt/homebrew/bin" ]] && path_prepend "/opt/homebrew/bin"
 
 elif [[ $OS_FAMILY == linux ]]; then
   # Linux defaults
@@ -115,6 +129,9 @@ fi
 # Optional: common toolchains
 [[ -d "$HOME/.cargo/bin" ]] && path_prepend "$HOME/.cargo/bin"
 [[ -d "$HOME/go/bin" ]] && path_prepend "$HOME/go/bin"
+
+# PostgreSQL client tools
+[[ -d "/opt/homebrew/opt/postgresql@17/bin" ]] && path_prepend "/opt/homebrew/opt/postgresql@17/bin"
 
 # ----------------------------------------------------------------------------
 # Fuzzy Finder (fzf)
@@ -163,9 +180,14 @@ noprompt() {
 # [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 
 # Python Environment Manager (pyenv)
+# NOTE: For login shells, pyenv also recommends `eval "$(pyenv init --path)"` in ~/.zprofile.
+
+# export PYENV_REHASH_TIMEOUT=1
 # export PYENV_ROOT="$HOME/.pyenv"
-# [[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
-# eval "$(pyenv init -)"
+# [[ -d "$PYENV_ROOT/bin" ]] && path_prepend "$PYENV_ROOT/bin"
+# if command -v pyenv >/dev/null 2>&1; then
+#   eval "$(pyenv init - zsh)"
+# fi
 
 # Python Virtual Environment Wrapper
 # export WORKON_HOME="$HOME/.virtualenvs"
@@ -193,7 +215,7 @@ alias gs='git status'
 alias ga='git add'
 alias gc='git commit'
 alias gp='git push'
-alias gl='git log --oneline'
+alias gl='git log --oneline -n 10 --graph'
 
 # dotfile backup (uses ~/.config/dotignore)
 alias config='/usr/bin/git --git-dir=$HOME/.cfg/ --work-tree=$HOME -c core.excludesFile=$HOME/.config/dotignore'
@@ -353,6 +375,78 @@ recent() {
   _recent_file_list "${fd_exclude_args[@]}" | head -n $count
 }
 
+
+# Delete local branches that have been merged or whose PR is closed/merged.
+# Checks merge status against origin/$base (not local $base) so a stale local
+# main branch doesn't cause merged branches to be silently skipped.
+#
+# Usage: git-cleanup-merged [base-branch] [--dry-run]
+#   base-branch  default: main
+#   --dry-run    print what would be deleted without deleting anything
+git-cleanup-merged() {
+  local base=${1:-main}
+  local dry_run=false
+  [[ "${2}" == "--dry-run" ]] && dry_run=true
+
+  # gh is required to look up PR state for branches not reachable from $base
+  if ! command -v gh &>/dev/null; then
+    echo "error: gh is not installed. Install it from https://cli.github.com/" >&2
+    return 1
+  fi
+  if ! gh repo view &>/dev/null; then
+    echo "error: gh cannot access the current repo. Run 'gh auth login' or check your token." >&2
+    return 1
+  fi
+
+  # Sync remote tracking refs and remove refs for deleted remote branches
+  git fetch --prune
+
+  local branch
+  # Read branch names without word-splitting; --format avoids the leading '*' on current branch
+  while IFS= read -r branch; do
+    [[ "$branch" == "$base" ]] && continue
+
+    # Check reachability against origin/$base, not local $base.
+    # Local $base may lag behind the remote even after fetch; origin/$base is current.
+    if git merge-base --is-ancestor "$branch" "origin/$base" 2>/dev/null; then
+      echo "merged:              $branch"
+      [[ "$dry_run" == false ]] && git branch -d "$branch"
+      continue
+    fi
+
+    # Branch is not in origin/$base's history — look up its PR state
+    local pr_state
+    if ! pr_state=$(gh pr list --head "$branch" --state all \
+        --json state --jq '.[0].state' 2>/dev/null); then
+      echo "gh error (skipping): $branch" >&2
+      continue
+    fi
+
+    case "$pr_state" in
+      MERGED)
+        # PR was merged via squash/rebase — the branch commit isn't an ancestor
+        # of $base but the work is already in, so force-delete is correct.
+        echo "merged (via PR):     $branch"
+        [[ "$dry_run" == false ]] && git branch -D "$branch"
+        ;;
+      CLOSED)
+        # PR was closed without merging — leave the branch alone in case the
+        # work needs to be revisited.
+        echo "closed, not merged (skipping): $branch"
+        ;;
+      OPEN)
+        echo "open PR (skipping):  $branch"
+        ;;
+      null|"")
+        # jq returns the string "null" when the array is empty (no PR found)
+        echo "no PR found (skipping): $branch"
+        ;;
+      *)
+        echo "unknown state '$pr_state' (skipping): $branch"
+        ;;
+    esac
+  done < <(git branch --format='%(refname:short)')
+}
 
 # Stopwatch: prints HH:MM:SS, Ctrl+C to stop
 stopwatch() {
